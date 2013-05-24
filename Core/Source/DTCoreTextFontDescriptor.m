@@ -88,9 +88,10 @@ static BOOL _needsChineseFontCascadeFix = NO;
 #endif
 	
 	// asynchronically load all available fonts into override table
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-		[self _loadAvailableFontsIntoOverrideTable];
-	});
+	//idogadaev: this takes 4 seconds! We will just go with Helvetica until this is resolved
+//	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+//		[self _loadAvailableFontsIntoOverrideTable];
+//	});
 }
 
 // gets descriptors of all available fonts from system and registers them as overrides
@@ -102,21 +103,30 @@ static BOOL _needsChineseFontCascadeFix = NO;
 	@synchronized(_fontOverrides)
 	{
 		// we ignore previous user overrides
+		NSLog(@"111111");
 		NSDictionary *userOverrides = [_fontOverrides copy];
+		NSLog(@"22222");
 		
 		// sort font descriptors by name so that shorter names are preferred
 		NSSortDescriptor *sort1 = [NSSortDescriptor sortDescriptorWithKey:@"fontFamily" ascending:YES];
 		NSSortDescriptor *sort2 = [NSSortDescriptor sortDescriptorWithKey:@"fontName" ascending:YES];
-		NSArray *sortedFonts = [[allFonts fontDescriptors] sortedArrayUsingDescriptors:[NSArray arrayWithObjects:sort1, sort2, nil]];
+		NSLog(@"333333");
+		NSArray * fontDescriptors = [allFonts fontDescriptors];
+		NSLog(@"333333");
+		NSArray *sortedFonts = [fontDescriptors sortedArrayUsingDescriptors:[NSArray arrayWithObjects:sort1, sort2, nil]];
+		NSLog(@"4444444, sortedFonts count=%d", sortedFonts.count);
 		
 		for (DTCoreTextFontDescriptor *oneFontDescriptor in sortedFonts)
 		{
 			NSString *key = [NSString stringWithFormat:@"%@-%d-%d-override", oneFontDescriptor.fontFamily, oneFontDescriptor.boldTrait, oneFontDescriptor.italicTrait];
 			
+			//NSLog(@"key=%@", key);
+			
 			if ([userOverrides objectForKey:key])
 			{
 				continue;
 			}
+			continue;
 			
 			NSString *existingOverride = [DTCoreTextFontDescriptor overrideFontNameforFontFamily:oneFontDescriptor.fontFamily bold:oneFontDescriptor.boldTrait italic:oneFontDescriptor.italicTrait];
 			
@@ -134,6 +144,7 @@ static BOOL _needsChineseFontCascadeFix = NO;
 			}
 		}
 	}
+	NSLog(@"555555");
 }
 
 + (void)setSmallCapsFontName:(NSString *)fontName forFontFamily:(NSString *)fontFamily bold:(BOOL)bold italic:(BOOL)italic
