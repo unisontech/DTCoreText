@@ -1291,7 +1291,13 @@ static BOOL _DTCoreTextLayoutFramesShouldDrawDebugFrames = NO;
 	{
 		return CGRectZero;
 	}
-	
+	float maxWidth = 0;
+	float constraintWidth = ceilf(_frame.size.width);
+	for (DTCoreTextLayoutLine * line in _lines)
+	{
+		if (line.frame.size.width > maxWidth)
+			maxWidth = line.frame.size.width;
+	}
 	if (_frame.size.height == CGFLOAT_OPEN_HEIGHT)
 	{
 		// actual frame is spanned between first and last lines
@@ -1299,7 +1305,10 @@ static BOOL _DTCoreTextLayoutFramesShouldDrawDebugFrames = NO;
 	
 		_frame.size.height = ceilf((CGRectGetMaxY(lastLine.frame) - _frame.origin.y + 1.5f + _additionalPaddingAtBottom));
 	}
-	
+	maxWidth = ceilf(maxWidth);
+	if (maxWidth > constraintWidth)
+		maxWidth = constraintWidth;
+	_frame.size.width = maxWidth;	
 	return _frame;
 }
 
