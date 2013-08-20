@@ -12,15 +12,17 @@
 
 static NSCache *_fontCache = nil;
 static NSMutableDictionary *_fontOverrides = nil;
-static dispatch_queue_t _fontQueue;
+
+// font family to use if no font can be found with the given font-family
+static NSString *_fallbackFontFamily = @"Times New Roman";
 
 // adds "STHeitiSC-Light" font for cascading fix on iOS 5
 static BOOL _needsChineseFontCascadeFix = NO;
 
 @interface DTCoreTextFontDescriptor ()
 
-// gets descriptors of all available fonts from system and registers them as overrides
-+ (void)_loadAvailableFontsIntoOverrideTable;
+// gets descriptors of all available fonts from system
++ (void)_createDictionaryOfAllAvailableFontOverrideNamesWithCompletion:(void(^)(NSDictionary *dictionary))completion;
 
 @end
 
@@ -34,7 +36,7 @@ static BOOL _needsChineseFontCascadeFix = NO;
 	
 	CTFontSymbolicTraits _stylisticTraits;
 	CTFontStylisticClass _stylisticClass;
-    
+	
 	BOOL _smallCapsFeature;
 }
 
@@ -47,7 +49,6 @@ static BOOL _needsChineseFontCascadeFix = NO;
 	}
 	
 	_fontCache = [[NSCache alloc] init];
-	_fontQueue = dispatch_queue_create("DTCoreTextFontDescriptor", 0);
 	
 	// init/load of overrides
 	_fontOverrides = [[NSMutableDictionary alloc] init];
@@ -88,62 +89,88 @@ static BOOL _needsChineseFontCascadeFix = NO;
 #endif
 	
 	// asynchronically load all available fonts into override table
-	//idogadaev: this takes 4 seconds! We will just go with Helvetica until this is resolved
-//	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-//		[self _loadAvailableFontsIntoOverrideTable];
-//	});
+	[self _createDictionaryOfAllAvailableFontOverrideNamesWithCompletion:^(NSDictionary *dictionary) {
+		
+		// now we're done and we can merge the new dictionary synchronized
+		
+		@synchronized(_fontOverrides)
+		{
+			[dictionary enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *overrideFontName, BOOL *stop) {
+				
+				// only add the overrides where there is no previous setting, either from plist of user setting it
+				if (![_fontOverrides objectForKey:key])
+				{
+					[_fontOverrides setObject:overrideFontName forKey:key];
+				}
+			}];
+		}
+	}];
 }
 
-// gets descriptors of all available fonts from system and registers them as overrides
-+ (void)_loadAvailableFontsIntoOverrideTable
+// get font names of all available fonts from system 
++ (void)_createDictionaryOfAllAvailableFontOverrideNamesWithCompletion:(void(^)(NSDictionary *dictionary))completion
 {
-	DTCoreTextFontCollection *allFonts = [DTCoreTextFontCollection availableFontsCollection];
-
-	// sync in case user adds overrides
-	@synchronized(_fontOverrides)
-	{
-		// we ignore previous user overrides
-		NSDictionary *userOverrides = [_fontOverrides copy];
+	NSParameterAssert(completion);
+	
+	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
 		
+		// get all font descriptors
+		DTCoreTextFontCollection *allFonts = [DTCoreTextFontCollection availableFontsCollection];
+		
+		NSMutableDictionary *tmpDictionary = [NSMutableDictionary dictionaryWithCapacity:[allFonts.fontDescriptors count]];
+
 		// sort font descriptors by name so that shorter names are preferred
 		NSSortDescriptor *sort1 = [NSSortDescriptor sortDescriptorWithKey:@"fontFamily" ascending:YES];
 		NSSortDescriptor *sort2 = [NSSortDescriptor sortDescriptorWithKey:@"fontName" ascending:YES];
 		NSArray * fontDescriptors = [allFonts fontDescriptors];
 		NSArray *sortedFonts = [fontDescriptors sortedArrayUsingDescriptors:[NSArray arrayWithObjects:sort1, sort2, nil]];
 		
+		
 		for (DTCoreTextFontDescriptor *oneFontDescriptor in sortedFonts)
 		{
 			NSString *key = [NSString stringWithFormat:@"%@-%d-%d-override", oneFontDescriptor.fontFamily, oneFontDescriptor.boldTrait, oneFontDescriptor.italicTrait];
 			
-			if ([userOverrides objectForKey:key])
-			{
-				continue;
-			}
-			
-			NSString *existingOverride = [DTCoreTextFontDescriptor overrideFontNameforFontFamily:oneFontDescriptor.fontFamily bold:oneFontDescriptor.boldTrait italic:oneFontDescriptor.italicTrait];
+			NSString *existingOverride = [tmpDictionary objectForKey:key];
 			
 			if (!existingOverride)
 			{
-				[DTCoreTextFontDescriptor setOverrideFontName:oneFontDescriptor.fontName forFontFamily:oneFontDescriptor.fontFamily bold:oneFontDescriptor.boldTrait italic:oneFontDescriptor.italicTrait];
+				[tmpDictionary setObject:oneFontDescriptor.fontName forKey:key];
 			}
 			else
 			{
 				// prefer fonts with shorter name, there are probably "more correct". e.g. Helvetica-Oblique instead of Helvetica-LightOblique
 				if ([existingOverride length]>[oneFontDescriptor.fontName length])
 				{
-					[DTCoreTextFontDescriptor setOverrideFontName:oneFontDescriptor.fontName forFontFamily:oneFontDescriptor.fontFamily bold:oneFontDescriptor.boldTrait italic:oneFontDescriptor.italicTrait];
+					[tmpDictionary setObject:oneFontDescriptor.fontName forKey:key];
 				}
 			}
 		}
-	}
+		
+		completion([tmpDictionary copy]);
+	});
+}
+
+#pragma mark - Global Font Overriding
+
++ (void)setFallbackFontFamily:(NSString *)fontFamily
+{
+	NSParameterAssert(fontFamily);
+	
+	_fallbackFontFamily = [fontFamily copy];
+}
+
++ (NSString *)fallbackFontFamily
+{
+	return _fallbackFontFamily;
 }
 
 + (void)setSmallCapsFontName:(NSString *)fontName forFontFamily:(NSString *)fontFamily bold:(BOOL)bold italic:(BOOL)italic
 {
-	dispatch_async(_fontQueue, ^{
+	@synchronized(_fontOverrides)
+	{
 		NSString *key = [NSString stringWithFormat:@"%@-%d-%d-smallcaps", fontFamily, bold, italic];
 		[_fontOverrides setObject:fontName forKey:key];
-	});
+	}
 }
 
 + (NSString *)smallCapsFontNameforFontFamily:(NSString *)fontFamily bold:(BOOL)bold italic:(BOOL)italic
@@ -365,7 +392,7 @@ static BOOL _needsChineseFontCascadeFix = NO;
 		NSNumber *selNum = [NSNumber numberWithInteger:3];
 		
 		NSDictionary *setting = [NSDictionary dictionaryWithObjectsAndKeys:selNum, (id)kCTFontFeatureSelectorIdentifierKey,
-								 typeNum, (id)kCTFontFeatureTypeIdentifierKey, nil];
+										 typeNum, (id)kCTFontFeatureTypeIdentifierKey, nil];
 		
 		NSArray *featureSettings = [NSArray arrayWithObject:setting];
 		
@@ -555,6 +582,19 @@ static BOOL _needsChineseFontCascadeFix = NO;
 			// do the relaxed search
 			matchingFontDescriptor = CTFontDescriptorCreateMatchingFontDescriptor(searchingFontDescriptor, NULL);
 		}
+		
+		if (!matchingFontDescriptor)
+		{
+			// try with fallback font family
+			NSMutableDictionary *mutableAttributes = [fontAttributes mutableCopy];
+			[mutableAttributes setObject:_fallbackFontFamily forKey:(id)kCTFontFamilyNameAttribute];
+			
+			CFRelease(searchingFontDescriptor);
+			searchingFontDescriptor = CTFontDescriptorCreateWithAttributes((__bridge CFDictionaryRef)mutableAttributes);
+			
+			// do the relaxed search
+			matchingFontDescriptor = CTFontDescriptorCreateMatchingFontDescriptor(searchingFontDescriptor, NULL);
+		}
 	}
 	
 	// any search was successful
@@ -589,14 +629,7 @@ static BOOL _needsChineseFontCascadeFix = NO;
 
 - (CTFontRef)newMatchingFont
 {
-	__block CTFontRef retFont;
-	
-	// all calls get queued
-	dispatch_sync(_fontQueue, ^{
-		retFont = [self _findOrMakeMatchingFont];
-	});
-	
-	return retFont;
+	return [self _findOrMakeMatchingFont];
 }
 
 // two font descriptors are equal if their attributes has identical hash codes
@@ -889,4 +922,3 @@ static BOOL _needsChineseFontCascadeFix = NO;
 @synthesize smallCapsFeature = _smallCapsFeature;
 
 @end
-

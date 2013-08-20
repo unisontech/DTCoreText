@@ -58,6 +58,7 @@
 	NSMutableDictionary *_tagEndHandlers;
 	
 	DTHTMLAttributedStringBuilderWillFlushCallback _willFlushCallback;
+	BOOL _shouldProcessCustomHTMLAttributes;
 	
 	// new parsing
 	DTHTMLElement *_rootNode;
@@ -279,6 +280,11 @@
 	_defaultTag.paragraphStyle = _defaultParagraphStyle;
 	_defaultTag.textScale = _textScale;
 	
+#if DTCORETEXT_FIX_14684188
+	// workaround, only necessary while rdar://14684188 is not fixed
+	_defaultTag.textColor = [UIColor blackColor];
+#endif
+	
 	id defaultColor = [_options objectForKey:DTDefaultTextColor];
 	if (defaultColor)
 	{
@@ -293,6 +299,8 @@
 			_defaultTag.textColor = [DTColor colorWithHTMLName:defaultColor];
 		}
 	}
+	
+	_shouldProcessCustomHTMLAttributes = [[_options objectForKey:DTProcessCustomHTMLAttributes] boolValue];
 	
 	// create a parser
 	DTHTMLParser *parser = [[DTHTMLParser alloc] initWithData:_data encoding:encoding];
@@ -361,9 +369,18 @@
 			_currentTag.isColorInherited = NO;
 		}
 		
+		// the name attribute of A becomes an anchor
+		_currentTag.anchorName = [_currentTag attributeForKey:@"name"];
+
 		// remove line breaks and whitespace in links
 		NSString *cleanString = [[_currentTag attributeForKey:@"href"] stringByReplacingOccurrencesOfString:@"\n" withString:@""];
 		cleanString = [cleanString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+		
+		if (![cleanString length])
+		{
+			// no valid href
+			return;
+		}
 		
 		NSURL *link = [NSURL URLWithString:cleanString];
 		
@@ -389,36 +406,13 @@
 		}
 		
 		_currentTag.link = link;
-		
-		// the name attribute of A becomes an anchor
-		_currentTag.anchorName = [_currentTag attributeForKey:@"name"];
 	};
 	
 	[_tagStartHandlers setObject:[aBlock copy] forKey:@"a"];
 	
-	
-//	void (^liBlock)(void) = ^
-//	{
-//		DTCSSListStyle *listStyle = [_currentTag.paragraphStyle.textLists lastObject];
-//		
-//		if (listStyle.type != DTCSSListStyleTypeNone)
-//		{
-//			// first tab is to right-align bullet, numbering against
-//			CGFloat tabOffset = _currentTag.paragraphStyle.headIndent - 5.0f*_textScale;
-//			[_currentTag.paragraphStyle addTabStopAtPosition:tabOffset alignment:kCTRightTextAlignment];
-//		}
-//		
-//		// second tab is for the beginning of first line after bullet
-//		[_currentTag.paragraphStyle addTabStopAtPosition:_currentTag.paragraphStyle.headIndent alignment:	kCTLeftTextAlignment];
-//	};
-//	
-//	[_tagStartHandlers setObject:[liBlock copy] forKey:@"li"];
-	
-	
 	void (^listBlock)(void) = ^
 	{
 		_currentTag.paragraphStyle.firstLineHeadIndent = _currentTag.paragraphStyle.headIndent;
-//		_currentTag.paragraphStyle.headIndent += _currentTag.paragraphStyle.listIndent;
 		
 		// create the appropriate list style from CSS
 		DTCSSListStyle *newListStyle = [_currentTag listStyle];
@@ -510,6 +504,8 @@
 	
 	void (^fontBlock)(void) = ^
 	{
+		CGFloat pointSize;
+		
 		NSString *sizeAttribute = [_currentTag attributeForKey:@"size"];
 		
 		if (sizeAttribute)
@@ -519,40 +515,55 @@
 			switch (sizeValue)
 			{
 				case 1:
-					_currentTag.fontDescriptor.pointSize = _textScale * 10.0f;
+					pointSize = _textScale * 10.0f;
 					break;
 				case 2:
-					_currentTag.fontDescriptor.pointSize = _textScale * 13.0f;
+					pointSize = _textScale * 13.0f;
 					break;
 				case 3:
-					_currentTag.fontDescriptor.pointSize = _textScale * 16.0f;
+					pointSize = _textScale * 16.0f;
 					break;
 				case 4:
-					_currentTag.fontDescriptor.pointSize = _textScale * 18.0f;
+					pointSize = _textScale * 18.0f;
 					break;
 				case 5:
-					_currentTag.fontDescriptor.pointSize = _textScale * 24.0f;
+					pointSize = _textScale * 24.0f;
 					break;
 				case 6:
-					_currentTag.fontDescriptor.pointSize = _textScale * 32.0f;
+					pointSize = _textScale * 32.0f;
 					break;
 				case 7:
-					_currentTag.fontDescriptor.pointSize = _textScale * 48.0f;
+					pointSize = _textScale * 48.0f;
 					break;
 				default:
-					_currentTag.fontDescriptor.pointSize = _defaultFontDescriptor.pointSize;
+					pointSize = _defaultFontDescriptor.pointSize;
 					break;
 			}
+		}
+		else
+		{
+			// size is inherited
+			pointSize = _currentTag.fontDescriptor.pointSize; 
 		}
 		
 		NSString *face = [_currentTag attributeForKey:@"face"];
 		
 		if (face)
 		{
-			_currentTag.fontDescriptor.fontName = face;
+			// create a temp font with this face
+			CTFontRef font = CTFontCreateWithName((__bridge CFStringRef)face, pointSize, NULL);
 			
-			// face usually invalidates family
-			_currentTag.fontDescriptor.fontFamily = nil;
+			_currentTag.fontDescriptor = [DTCoreTextFontDescriptor fontDescriptorForCTFont:font];
+			
+			// remove font, keep only family to avoid problems on inheriting
+			_currentTag.fontDescriptor.fontName = nil;
+			
+			CFRelease(font);
+		}
+		else
+		{
+			// modify inherited descriptor
+			_currentTag.fontDescriptor.pointSize = pointSize;
 		}
 		
 		NSString *color = [_currentTag attributeForKey:@"color"];
@@ -666,6 +677,11 @@
 			{
 				_bodyElement = newNode;
 			}
+			
+			if (_shouldProcessCustomHTMLAttributes)
+			{
+				newNode.shouldProcessCustomHTMLAttributes = _shouldProcessCustomHTMLAttributes;
+			}
 		}
 		else
 		{
@@ -682,10 +698,37 @@
 		}
 		
 		// apply style from merged style sheet
-		NSDictionary *mergedStyles = [_globalStyleSheet mergedStyleDictionaryForElement:newNode];
+		NSSet *matchedSelectors;
+		NSDictionary *mergedStyles = [_globalStyleSheet mergedStyleDictionaryForElement:newNode matchedSelectors:&matchedSelectors];
+		
 		if (mergedStyles)
 		{
 			[newNode applyStyleDictionary:mergedStyles];
+			
+			// do not add the matched class names to 'class' custom attribute 
+			if (matchedSelectors)
+			{
+				NSMutableSet *classNamesToIgnoreForCustomAttributes = [NSMutableSet set];
+				
+				for (NSString *oneSelector in matchedSelectors)
+				{
+					// class selectors have a period
+					NSRange periodRange = [oneSelector rangeOfString:@"."];
+					
+					if (periodRange.location != NSNotFound)
+					{
+						NSString *className = [oneSelector substringFromIndex:periodRange.location+1];
+						
+						// add this to ignored classes
+						[classNamesToIgnoreForCustomAttributes addObject:className];
+					}
+				}
+				
+				if ([classNamesToIgnoreForCustomAttributes count])
+				{
+					newNode.CSSClassNamesToIgnoreForCustomAttributes = classNamesToIgnoreForCustomAttributes;
+				}
+			}
 		}
 		
 		// adding a block element eliminates previous trailing white space text node
@@ -805,16 +848,16 @@
 
 - (void)parser:(DTHTMLParser *)parser foundCharacters:(NSString *)string
 {
-	
 	dispatch_group_async(_treeBuildingGroup, _treeBuildingQueue, ^{
-		NSAssert(_currentTag, @"Cannot add text node without a current node");
 		
 		if (_ignoreParseEvents)
 		{
 			return;
 		}
 		
-		if ([string isIgnorableWhitespace])
+		NSAssert(_currentTag, @"Cannot add text node without a current node");
+		
+		if (!_currentTag.preserveNewlines && [string isIgnorableWhitespace])
 		{
 			// ignore whitespace as first element of block element
 			if (_currentTag.displayStyle!=DTHTMLElementDisplayStyleInline && ![_currentTag.childNodes count])
