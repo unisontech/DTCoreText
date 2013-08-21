@@ -87,7 +87,12 @@ static BOOL _needsChineseFontCascadeFix = NO;
 		_needsChineseFontCascadeFix = YES;
 	}
 #endif
-	
+
+	/*
+	// This comment section fixes lag on start of the app.
+	// Probably can have side affects
+	// Remove in case of problems with DTCoreText
+
 	// asynchronically load all available fonts into override table
 	[self _createDictionaryOfAllAvailableFontOverrideNamesWithCompletion:^(NSDictionary *dictionary) {
 		
@@ -105,13 +110,14 @@ static BOOL _needsChineseFontCascadeFix = NO;
 			}];
 		}
 	}];
+	*/
 }
 
 // get font names of all available fonts from system 
 + (void)_createDictionaryOfAllAvailableFontOverrideNamesWithCompletion:(void(^)(NSDictionary *dictionary))completion
 {
 	NSParameterAssert(completion);
-	
+
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
 		
 		// get all font descriptors
