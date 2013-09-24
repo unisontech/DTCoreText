@@ -460,8 +460,7 @@ static BOOL _DTCoreTextLayoutFramesShouldDrawDebugFrames = NO;
 		CTParagraphStyleGetValueForSpecifier(paragraphStyle, kCTParagraphStyleSpecifierTailIndent, sizeof(tailIndent), &tailIndent);
 		
 		// add left padding to offset
-		CGFloat lineOriginX = _frame.origin.x + headIndent; // + currentTextBlock.padding.left;
-		
+		CGFloat lineOriginX;
 		CGFloat availableSpace;
 		
 		NSArray *textBlocks = [_attributedStringFragment attribute:DTTextBlocksAttribute atIndex:lineRange.location effectiveRange:NULL];
@@ -484,7 +483,14 @@ static BOOL _DTCoreTextLayoutFramesShouldDrawDebugFrames = NO;
 			availableSpace = tailIndent - headIndent - totalLeftPadding - totalRightPadding;
 		}
 		
-		CGFloat offset = headIndent + totalLeftPadding;
+		
+		CGFloat offset = totalLeftPadding;
+		
+		// if first character is a tab, then it is positioned without the indentation
+		if (![[[_attributedStringFragment string] substringWithRange:NSMakeRange(lineRange.location, 1)] isEqualToString:@"\t"])
+		{
+			offset += headIndent;
+		}
 		
 		// find how many characters we get into this line
 		lineRange.length = CTTypesetterSuggestLineBreak(typesetter, lineRange.location, availableSpace);
@@ -942,6 +948,7 @@ static BOOL _DTCoreTextLayoutFramesShouldDrawDebugFrames = NO;
 	// search for the end blocks for this range
 	BOOL foundEndBlocks = NO;
 	
+	// set index on last character before end of searched range
 	index = NSMaxRange(range)-1;
 	
 	do
@@ -953,12 +960,15 @@ static BOOL _DTCoreTextLayoutFramesShouldDrawDebugFrames = NO;
 		}
 		
 		NSRange effectiveRangeOfBlocksArray;
-		NSArray *textBlocks = [_attributedStringFragment attribute:DTTextBlocksAttribute atIndex:index-1 effectiveRange:&effectiveRangeOfBlocksArray];
+		NSArray *textBlocks = [_attributedStringFragment attribute:DTTextBlocksAttribute atIndex:index effectiveRange:&effectiveRangeOfBlocksArray];
 		
-		// skip a range of empty blocks at start
+		// search of backwards from end of range until we find blocks
 		if (!textBlocks)
 		{
-			index = effectiveRangeOfBlocksArray.location;
+			// set index on last character before this region without text blocks
+			index = effectiveRangeOfBlocksArray.location-1;
+			NSAssert(index>=effectiveRange.location, @"we should never need to search before the beginning text blocks");
+			
 			continue;
 		}
 		
@@ -990,7 +1000,7 @@ static BOOL _DTCoreTextLayoutFramesShouldDrawDebugFrames = NO;
 	while (!foundEndBlocks);
 	
 	
-	if (foundStartBlocks&&foundEndBlocks)
+	if (effectiveRange.length)
 	{
 		return effectiveRange;
 	}
@@ -1356,12 +1366,6 @@ static BOOL _DTCoreTextLayoutFramesShouldDrawDebugFrames = NO;
 	{
 		return;
 	}
-	
-	DTCoreTextLayoutLine *firstLine = [visibleLines objectAtIndex:0];
-	DTCoreTextLayoutLine *lastLine = [visibleLines lastObject];
-	
-	NSRange stringRangeToDraw = firstLine.stringRange;
-	stringRangeToDraw = NSUnionRange(stringRangeToDraw, lastLine.stringRange);
 	
 	CGContextSaveGState(context);
 	

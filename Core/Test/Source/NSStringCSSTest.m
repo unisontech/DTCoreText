@@ -9,7 +9,7 @@
 #import "DTCompatibility.h"
 #import "NSStringCSSTest.h"
 #import "NSString+CSS.h"
-#import "DTColor+HTML.h"
+#import "DTColor+Compatibility.h"
 
 @implementation NSStringCSSTest
 
@@ -185,6 +185,15 @@
 	
 	STAssertEqualObjects(@"rgb(255, 0, 0)", color, @"Color should be \"rgb(255, 0, 0)\"");
 	STAssertTrue([color isKindOfClass:[NSString class]], @"shadow count should be a string");	
+}
+
+- (void)textBackgroundColor
+{
+	NSString *style = @"font-family:Helvetica;font-weight:bold;background-color:rgb(255, 88, 44);font-size:30px;";
+	NSDictionary *dictionary = [style dictionaryOfCSSStyles];
+	id color = dictionary[@"background-color"];
+	
+	STAssertEqualObjects(@"rgb(255, 0, 0)", color, @"Background color should be \"rgb(255, 88, 44)\"");
 }
 
 @end
